@@ -35,10 +35,14 @@ exports.handler = (event, context, callback) => {
   console.log('what is request.uri', request.uri);
   const {
     host: [{ value: hostEndpoint }],
-    referer = []
+    referer = [({ value: refererEndpoint } = {})]
   } = headers;
   const redirectEndpoint =
-    referer[0] && referer[0].value !== hostEndpoint ? referer[0].value : `${hostEndpoint}/success`;
+    refererEndpoint &&
+    typeof refererEndpoint === 'string' &&
+    refererEndpoint.replace(/\/$/, '') !== hostEndpoint
+      ? refererEndpoint
+      : `${hostEndpoint}/success`;
 
   if (request.method === 'GET') {
     if (!headers.authorization) {
@@ -52,27 +56,34 @@ exports.handler = (event, context, callback) => {
           console.log('jwt verify error: fowarding request', err);
           return callback(null, request);
         } else {
-          console.log('jwt verify success: forwarding to referer or success', referer, val);
-          return callback(null, {
-            status: '200',
+          const redirectResponse = {
+            status: '303',
             statusDescription: 'Authenticated',
             headers: {
-              key: 'Location',
-              value: redirectEndpoint
+              location: [
+                {
+                  key: 'Location',
+                  value: redirectEndpoint
+                }
+              ]
             }
-          });
+          };
+          console.log(
+            `jwt verify ${val} success: forwarding to referer or success`,
+            JSON.stringify(redirectResponse)
+          );
+          return callback(null, redirectResponse);
         }
       });
     }
   } else if (request.method === 'POST') {
     console.log('event is', JSON.stringify(event));
-    console.log('request.headers is', JSON.stringify(headers));
     /* HTTP body is always passed as base64-encoded string. Decode it. */
 
-    const body = Buffer.from(request.body.data, 'base64').toString();
+    const body = JSON.parse(Buffer.from(request.body.data, 'base64').toString());
     console.log('request body is', JSON.stringify(body));
 
-    const { username, password } = JSON.parse(body);
+    const { username, password } = body;
     const foundUser = users.filter(
       user => user.username === username && user.password === password
     )[0];
@@ -83,45 +94,36 @@ exports.handler = (event, context, callback) => {
         statusDescription: 'Unauthorized'
       });
     } else {
-      // const response = {
-      //     status: '302',
-      //     statusDescription: 'Found',
-      //     headers: {
-      //       location: [{
-      //         key: 'Location',
-      //         value: 'https://bit.ly/very-secret'
-      //       }],
-      //     },
-      //   };
       console.log('passing jwt verify');
       //If all credentials are correct do this
       let token = jwt.sign({ id: foundUser.id, username: foundUser.username }, secret, {
         expiresIn: 129600
       }); // Sigining the token
-
-      const { referer } = headers;
-      console.log('user auth post success: forwarding to referer or success', referer);
-      callback(null, {
+      const redirectResponse = {
         status: '200',
         statusDescription: 'Authenticated',
+        body: {
+          token
+        },
         headers: {
-          key: 'Location',
-          value: redirectEndpoint
+          location: [
+            {
+              key: 'Location',
+              value: redirectEndpoint
+            }
+          ]
         }
-      });
+      };
+
+      console.log(
+        'user auth post success: forwarding to referer or success',
+        JSON.stringify(redirectResponse)
+      );
+      callback(null, redirectEndpoint);
     }
 
     /* HTML forms send the data in query string format. Parse it. */
     // const params = querystring.parse(body);
-
-    /* For demonstration purposes, we only log the form fields here.
-     * You can put your custom logic here. For example, you can store the
-     * fields in a database, such as AWS DynamoDB, and generate a response
-     * right from your Lambda@Edge function.
-     */
-    // for (let param in params) {
-    //   console.log(`For "${param}" user submitted "${params[param]}".\n`);
-    // }
   } else {
     console.log('unhandled request method', request.method);
     return callback(null, request);
